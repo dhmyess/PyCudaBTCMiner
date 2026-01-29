@@ -1,0 +1,190 @@
+#include <stdint.h>
+#include <cuda_runtime.h>
+#include <curand_kernel.h>
+#include <stdio.h>
+#include <inttypes.h>
+
+// Macro rotasi bit (SHA-256)
+#define ROTR(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
+
+// Konstanta K SHA-256
+__constant__ uint32_t K[64] = {
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+};
+
+// Fungsi LEV (Little Endian Value)
+__device__ __forceinline__ uint32_t cuda_lev(uint32_t val) {
+    return ((val & 0xFF000000) >> 24) |
+           ((val & 0x00FF0000) >> 8)  |
+           ((val & 0x0000FF00) << 8)  |
+           ((val & 0x000000FF) << 24);
+}
+
+// Kernel untuk inisialisasi state random (dijalankan sekali di awal)
+__global__ void setup_curand(curandState *state, unsigned long seed) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    curand_init(seed, idx, 0, &state[idx]);
+}
+
+// Kernel Mining dengan Random Nonce
+__global__ void find_nonce_random_kernel(const uint32_t* input_state, uint32_t* result_nonce, curandState *globalState) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    // Copy state random ke local memory untuk performa
+    curandState localState = globalState[idx];
+
+    // Generate random nonce (uint32 penuh: 0 - 0xFFFFFFFF)
+    uint32_t nonce = curand(&localState);
+
+    // Simpan kembali state random (agar pemanggilan berikutnya berbeda)
+    globalState[idx] = localState;
+
+    // --- LOGIKA MINING ---
+
+    // Step 1: Prepare W2
+    uint32_t w[64];
+    w[0] = input_state[8];
+    w[1] = input_state[9];
+    w[2] = input_state[10];
+    w[3] = nonce; // Nonce acak yang sudah di-LEV
+    w[4] = 0x80000000;
+    
+    #pragma unroll
+    for(int i=5; i<15; i++) w[i] = 0;
+    w[15] = 0x280;
+
+    #pragma unroll
+    for (int i = 16; i < 64; i++) {
+        uint32_t s0 = ROTR(w[i-15], 7) ^ ROTR(w[i-15], 18) ^ (w[i-15] >> 3);
+        uint32_t s1 = ROTR(w[i-2], 17) ^ ROTR(w[i-2], 19) ^ (w[i-2] >> 10);
+        w[i] = w[i-16] + s0 + w[i-7] + s1;
+    }
+
+    // Step 2: Compression Round 1
+    uint32_t a = input_state[0]; 
+    uint32_t b = input_state[1]; 
+    uint32_t c = input_state[2]; 
+    uint32_t d = input_state[3]; 
+    uint32_t e = input_state[4]; 
+    uint32_t f = input_state[5]; 
+    uint32_t g = input_state[6]; 
+    uint32_t h = input_state[7];
+
+    #pragma unroll
+    for (int i = 0; i < 64; i++) {
+        uint32_t S1 = ROTR(e, 6) ^ ROTR(e, 11) ^ ROTR(e, 25);
+        uint32_t ch = (e & f) ^ ((~e) & g);
+        uint32_t temp1 = h + S1 + ch + K[i] + w[i];
+        uint32_t S0 = ROTR(a, 2) ^ ROTR(a, 13) ^ ROTR(a, 22);
+        uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+        uint32_t temp2 = S0 + maj;
+
+        h = g; g = f; f = e; e = d + temp1;
+        d = c; c = b; b = a; a = temp1 + temp2;
+    }
+
+    w[0] = input_state[0] + a;
+    w[1] = input_state[1] + b;
+    w[2] = input_state[2] + c;
+    w[3] = input_state[3] + d;
+    w[4] = input_state[4] + e;
+    w[5] = input_state[5] + f;
+    w[6] = input_state[6] + g;
+    w[7] = input_state[7] + h;
+
+    // Step 3: Prepare W3
+    w[8] = 0x80000000;
+    #pragma unroll
+    for(int i=9; i<15; i++) w[i] = 0;
+    w[15] = 0x100;
+
+    #pragma unroll
+    for (int i = 16; i < 64; i++) {
+        uint32_t s0 = ROTR(w[i-15], 7) ^ ROTR(w[i-15], 18) ^ (w[i-15] >> 3);
+        uint32_t s1 = ROTR(w[i-2], 17) ^ ROTR(w[i-2], 19) ^ (w[i-2] >> 10);
+        w[i] = w[i-16] + s0 + w[i-7] + s1;
+    }
+
+    // Step 4: Compression Round 2
+    a = 0x6a09e667; b = 0xbb67ae85; c = 0x3c6ef372; d = 0xa54ff53a;
+    e = 0x510e527f; f = 0x9b05688c; g = 0x1f83d9ab; h = 0x5be0cd19;
+
+    #pragma unroll
+    for (int i = 0; i < 64; i++) {
+        uint32_t S1 = ROTR(e, 6) ^ ROTR(e, 11) ^ ROTR(e, 25);
+        uint32_t ch = (e & f) ^ ((~e) & g);
+        uint32_t temp1 = h + S1 + ch + K[i] + w[i];
+        uint32_t S0 = ROTR(a, 2) ^ ROTR(a, 13) ^ ROTR(a, 22);
+        uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+        uint32_t temp2 = S0 + maj;
+
+        h = g; g = f; f = e; e = d + temp1;
+        d = c; c = b; b = a; a = temp1 + temp2;
+    }
+    // --- STEP 5: CHECK RESULT ---
+    uint32_t diff_target1 = input_state[11];
+    uint32_t diff_target2 = input_state[12];
+
+    // Hitung nilai yang akan dicek (sesuai Python)
+    uint32_t h37 = (0x5be0cd19 + h);
+    uint32_t h36 = (0x1f83d9ab + g);
+    uint32_t h35 = (0x9b05688c + f);
+
+    // Cek kondisi seperti di looper.cu
+    if (h37 != 0x00000000) return;
+    if (cuda_lev(h36) > diff_target1) return;
+    if (cuda_lev(h35) > diff_target2) return;
+
+    // Found valid nonce!
+    atomicCAS(result_nonce, 0xFFFFFFFF, nonce);
+}
+
+extern "C" {
+    // seed digunakan agar setiap kali run dari Python hasilnya beda (bisa pakai time.time())
+    uint32_t run_gpu_miner(uint32_t* input_data, unsigned long seed) {
+        uint32_t *d_input, *d_result;
+        curandState *d_states;
+        uint32_t h_result = 0xFFFFFFFF;
+
+        // Konfigurasi Grid
+        int threadsPerBlock = 256;
+        int blocksPerGrid = 768; // Jumlah block bisa dinaikkan untuk paraleleisme lebih tinggi
+        int totalThreads = threadsPerBlock * blocksPerGrid;
+
+        // Alokasi Memory
+        cudaMalloc((void**)&d_input, 13 * sizeof(uint32_t));
+        cudaMalloc((void**)&d_result, sizeof(uint32_t));
+        cudaMalloc((void**)&d_states, totalThreads * sizeof(curandState)); // Memory untuk state random
+
+        // Copy Data
+        cudaMemcpy(d_input, input_data, 13 * sizeof(uint32_t), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_result, &h_result, sizeof(uint32_t), cudaMemcpyHostToDevice);
+
+        // --- STEP A: Inisialisasi RNG (Hanya sekali) ---
+        setup_curand<<<blocksPerGrid, threadsPerBlock>>>(d_states, seed);
+        
+        // --- STEP B: Looping Mining ---
+        for (int i = 0; i < 2000; i++) {
+            find_nonce_random_kernel<<<blocksPerGrid, threadsPerBlock>>>(d_input, d_result, d_states);
+            
+            // Cek hasil setiap batch
+            cudaMemcpy(&h_result, d_result, sizeof(uint32_t), cudaMemcpyDeviceToHost);
+            if (h_result != 0xFFFFFFFF) {
+                break;
+            }
+        }
+
+        cudaFree(d_input);
+        cudaFree(d_result);
+        cudaFree(d_states);
+
+        return h_result;
+    }
+}
