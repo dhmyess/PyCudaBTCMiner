@@ -134,12 +134,10 @@ __global__ void find_nonce_random_kernel(const uint32_t* input_state, uint32_t* 
 
     // Hitung nilai yang akan dicek (sesuai Python)
     uint32_t h37 = (0x5be0cd19 + h);
-    uint32_t h36 = (0x1f83d9ab + g);
-    uint32_t h35 = (0x9b05688c + f);
-
-    // Cek kondisi seperti di looper.cu
     if (h37 != 0x00000000) return;
+    uint32_t h36 = (0x1f83d9ab + g);
     if (cuda_lev(h36) > diff_target1) return;
+    uint32_t h35 = (0x9b05688c + f);
     if (cuda_lev(h35) > diff_target2) return;
 
     // Found valid nonce!
