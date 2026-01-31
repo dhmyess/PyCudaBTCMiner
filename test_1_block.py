@@ -1,4 +1,4 @@
-import gminer
+import looper
 import time
 def lev(nonce):
     byte0 = (nonce & 0xFF000000) >> 24
@@ -14,7 +14,7 @@ hex_header = "010000000000000000000000000000000000000000000000000000000000000000
 pool_target = 1
 print("Starting mining...")
 start = time.time()
-nonce, blockhash = gminer.mining_nonce(hex_header, pool_target)
+nonce, blockhash = looper.mining_nonce(hex_header, pool_target)
 elapsed = time.time() - start
 
 if nonce is None or blockhash is None :
