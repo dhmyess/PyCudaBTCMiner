@@ -123,7 +123,7 @@ This method will:
 If you're using `random_miner.py` and want to increase the number of nonces tried per extranonce2:
 
 1. Open `rr.cu` file
-2. Find lines 157 and 158:
+2. Find lines 167 and 168:
    ```c
    int threadsPerBlock = 256;  // Threads per block
    int blocksPerGrid = 768;    // Blocks per grid
