@@ -6,7 +6,7 @@ import sys
 import traceback
 import random
 from datetime import datetime
-from looper import mining_nonce
+from looper import mining_nonce, lev # Pastikan import lev juga jika diperlukan untuk debug
 
 # -------------------------------
 # CONFIG
@@ -16,11 +16,10 @@ config = {
     "pool_port": 3333,
     "user_name": "bc1qngzehzs73x2p5k7r7pa7na69ej89p40qxnrh60",
     "password": "x",
-    # tuning
-    "min_diff": 1, #minimal min_diff is 1 even pool target set < 1 nonce miner from the module only outputs a hash if diff >=1
+    "min_diff": 1, 
     "poll_sleep": 0.05,
     "reconnect_backoff": 5.0,
-    "max_extranonce2": 0xFFFFFFFF  # Maximum value for extranonce2 based on extranonce2_size
+    "max_extranonce2": 0xFFFFFFFF
 }
 
 # -------------------------------
@@ -35,7 +34,7 @@ class StratumClient:
         self.extranonce1 = None
         self.extranonce2_size = 0
         self.connected = False
-        self.difficulty = 100000.0  # Default difficulty, akan diupdate dari pool
+        self.difficulty = 100000.0
         self._connect()
 
     def _connect(self):
@@ -45,7 +44,7 @@ class StratumClient:
             except Exception:
                 pass
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.settimeout(10.0)
+        self.sock.settimeout(20.0) # Timeout lebih panjang karena full loop mungkin lama
         self.sock.connect((self.host, self.port))
         self.buffer = b""
         self.connected = True
@@ -68,10 +67,13 @@ class StratumClient:
 
     def recv_blocking_line(self):
         while b"\n" not in self.buffer:
-            data = self.sock.recv(4096)
-            if not data:
-                raise Exception("Disconnected")
-            self.buffer += data
+            try:
+                data = self.sock.recv(4096)
+                if not data:
+                    raise Exception("Disconnected")
+                self.buffer += data
+            except socket.timeout:
+                pass # Continue waiting
         line, self.buffer = self.buffer.split(b"\n", 1)
         return json.loads(line.decode())
 
@@ -81,24 +83,20 @@ class StratumClient:
             return msgs
         while True:
             try:
-                # Menggunakan MSG_DONTWAIT atau timeout sangat pendek jika memungkinkan, 
-                # tapi di sini kita andalkan settimeout socket utama atau struktur non-blocking
-                self.sock.settimeout(0.0) # Non-blocking check
+                self.sock.settimeout(0.0)
                 data = self.sock.recv(4096)
                 if not data:
                     self.connected = False
                     break
                 self.buffer += data
             except BlockingIOError:
-                break # Tidak ada data
+                break
             except socket.timeout:
-                break # Timeout
+                break
             except Exception:
-                # self.connected = False
                 break
         
-        # Kembalikan socket ke timeout normal untuk operasi blocking jika perlu
-        self.sock.settimeout(10.0)
+        self.sock.settimeout(20.0)
 
         while b"\n" in self.buffer:
             line, self.buffer = self.buffer.split(b"\n", 1)
@@ -127,14 +125,6 @@ class StratumClient:
 # -------------------------------
 # helpers
 # -------------------------------
-def lev(nonce):
-    byte0 = (nonce & 0xFF000000) >> 24
-    byte1 = (nonce & 0x00FF0000) >> 16
-    byte2 = (nonce & 0x0000FF00) >> 8
-    byte3 = (nonce & 0x000000FF)
-    little_endian_value = (byte3 << 24) | (byte2 << 16) | (byte1 << 8) | byte0
-    return little_endian_value
-
 def rev_hex(hexstr):
     return "".join([hexstr[i:i+2] for i in range(0, len(hexstr), 2)][::-1])
 
@@ -161,7 +151,6 @@ def build_block_header_from_job(job, extranonce1, extranonce2):
     root = double_sha256_hex(coinbase)
     for m in merkle_branch:
         root = double_sha256_hex(root + m)
-    # HEADER TANPA NONCE (76 bytes)
     clean_job = job[8]
     header = version + prevhash + root + ntime + nbits
     return job_id, header
@@ -178,40 +167,32 @@ def mine_loop():
             client = StratumClient(config["pool_address"], config["pool_port"])
             client.login(config["user_name"], config["password"])
             print("[+] Auth OK")
-            print("[+] extranonce1 =", client.extranonce1)
-            print("[+] extranonce2_size =", client.extranonce2_size)
             print(f"[+] Initial difficulty: {client.difficulty:.2f}")
             current_job = None
-            current_clean_job = True
             current_job_id = None
             extranonce2_int = random.randint(0,0xffffffff)
             need_new_job = True 
             en2_counter = 0
             target_miner = client.difficulty
+            
             while client.connected:
-                # 1. Poll messages untuk update job dan difficulty
+                # 1. Poll messages
                 for msg in client.poll_message():
                     if msg.get("method") == "mining.notify":
                         new_job = msg["params"]
                         new_job_id = new_job[0]
                         new_clean_job = new_job[8]
 
-                        # Kondisi: Job ID berbeda ATAU clean_jobs=True
                         if new_job_id != current_job_id or new_clean_job:
-                            reason = "Clean Job" if new_clean_job else "New Job ID"
-                            print(f"   [i] {en2_counter} extranonce2 has been tried\n")
-                            print(f"[+] {reason} detected! Switching to job: {new_job_id} Pool difficulty : {client.difficulty} and miner target : {target_miner}")
-
+                            print(f"[+] New Job detected! ID: {new_job_id}")
                             current_job = new_job
-                            current_clean_job = new_clean_job
                             current_job_id = new_job_id
                             
-                            # Reset extranonce2 setiap kali ganti job baru agar mulai dari awal
+                            # Reset loop logic for new job
                             en2_counter = 0
                             extranonce2_int = random.randint(0,0xffffffff)
                             need_new_job = False
                     
-                    # Tangani update difficulty dari pool
                     elif msg.get("method") == "mining.set_difficulty":
                         new_difficulty = float(msg["params"][0])
                         if new_difficulty < target_miner:
@@ -223,11 +204,10 @@ def mine_loop():
                             target_miner = new_difficulty
                         if new_difficulty != client.difficulty:
                             client.difficulty = new_difficulty
-                            print(f"[+] Pool difficulty updated: {new_difficulty:.6f} and miner target: {target_miner:.6f}")
+                            print(f"[+] Pool difficulty updated: {new_difficulty:.6f}")
 
-                # 2. Jika belum ada job (awal koneksi)
+                # 2. Wait for job
                 if need_new_job and current_job is None:
-                    print("[i] Waiting for first job...")
                     time.sleep(config["poll_sleep"])
                     continue
 
@@ -239,44 +219,48 @@ def mine_loop():
                     extranonce2
                 )
 
-                # 5. EXECUTE MINER dengan pool difficulty target
-                print(f"  [*] Mining with extranonce2 {extranonce2_int:08x}")
+                print(f"[>] Scanning Full Range (0-4G) | EN2: {extranonce2}...")
                 start_time = time.time()
-                nonce, blockhash = mining_nonce(header_hex, target_miner)
+                
+                # 4. EXECUTE MINER (FULL LOOP)
+                # mining_nonce di sini akan memanggil liblooper.so yg meloop dari 0 - 0xFFFFFFFF
+                # Hasilnya berupa list of tuples [(nonce, hash), ...]
+                found_shares_list = mining_nonce(header_hex, target_miner)
+
                 stop_time = time.time()
                 elapse_time = stop_time - start_time
-                # 6. Submit jika ketemu
-                if nonce is not None and blockhash is not None:
-                    found_difficulty = 0x00000000ffff0000000000000000000000000000000000000000000000000000 / int(blockhash, 16)
-                    now = datetime.now()
-                    current_time_string = now.strftime("%H:%M:%S")
-                    
-                    print(f"  [✅] {current_time_string} Found Share!")
-                    print(f"       Job ID: {current_job[0]}")
-                    print(f"       EN2   : {extranonce2}")
-                    print(f"       Nonce : {nonce:08x}")
-                    print(f"       Hash  : {blockhash}")
-                    print(f"       Diff  : {found_difficulty:.2f} (Target from pool: {client.difficulty:.2f})")
+                
+                # Hitung hashrate berdasarkan scan penuh
+                # 0xFFFFFFFF = 4,294,967,295 hashes
+                rate = 4294967295.0 / elapse_time
+                print(f"    Finished in {elapse_time:.2f}s | Hashrate: {rate/1000000:.2f} MH/s")
 
-                    params = [
-                        config["user_name"],
-                        current_job[0],
-                        extranonce2,
-                        current_job[7],
-                        f"{nonce:08x}"
-                    ]
-                    client.send("mining.submit", params)
-                if nonce is not None and blockhash is not None:
-                    nonce_loop = lev(nonce)
-                    rate = nonce_loop / elapse_time
-                    Hashrate = rate/1000000
-                    print(f"       Hashrate : {Hashrate:.2f} MH/s")
+                # 5. Submit SEMUA share yang ditemukan
+                if found_shares_list:
+                    for (nonce, blockhash) in found_shares_list:
+                        found_difficulty = 0x00000000ffff0000000000000000000000000000000000000000000000000000 / int(blockhash, 16)
+                        now = datetime.now()
+                        current_time_string = now.strftime("%H:%M:%S")
+                        
+                        print(f"  [✅] {current_time_string} Found Share!")
+                        print(f"       Job ID: {current_job[0]}")
+                        print(f"       Nonce : {nonce:08x}")
+                        print(f"       Hash  : {blockhash}")
+                        print(f"       Diff  : {found_difficulty:.2f}")
+
+                        params = [
+                            config["user_name"],
+                            current_job[0],
+                            extranonce2,
+                            current_job[7],
+                            f"{nonce:08x}"
+                        ]
+                        client.send("mining.submit", params)
                 else:
-                    rate = 0xffffffff / elapse_time
-                    Hashrate = rate/1000000
-                    print(f"       Hashrate : {Hashrate:.2f} MH/s")
-                # 7. Increment Extranonce2
-                # Menggunakan increment random atau +1
+                    # Jika list kosong (-1 logic), berarti tidak ada share di range ini
+                    pass
+
+                # 6. Ganti Extranonce2 setelah 1 full loop selesai
                 en2_counter += 1
                 extranonce2_int = random.randint(0,0xffffffff)
 
@@ -293,9 +277,5 @@ def mine_loop():
             print(f"[!] Reconnecting in {backoff}s...")
             time.sleep(backoff)
 
-# -------------------------------
-# Entry
-# -------------------------------
 if __name__ == "__main__":
     mine_loop()
-
