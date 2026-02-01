@@ -12,7 +12,7 @@ from rrnonce import mining_nonce
 # CONFIG
 # -------------------------------
 config = {
-    "pool_address": "127.0.0.1",
+    "pool_address": "public-pool.io",
     "pool_port": 3333,
     "user_name": "bc1qngzehzs73x2p5k7r7pa7na69ej89p40qxnrh60",
     "password": "x",
@@ -270,3 +270,4 @@ def mine_loop():
 
 if __name__ == "__main__":
     mine_loop()
+
