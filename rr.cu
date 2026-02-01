@@ -33,8 +33,14 @@ __global__ void setup_curand(curandState *state, unsigned long seed) {
     curand_init(seed, idx, 0, &state[idx]);
 }
 
-// Kernel Mining dengan Random Nonce
-__global__ void find_nonce_random_kernel(const uint32_t* input_state, uint32_t* result_nonce, curandState *globalState) {
+// Kernel Mining dengan Random Nonce (Multiple Output Support)
+__global__ void find_nonce_random_kernel(
+    const uint32_t* input_state, 
+    uint32_t* result_buffer, 
+    uint32_t* found_count,
+    uint32_t max_results,
+    curandState *globalState
+) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     
     // Copy state random ke local memory untuk performa
@@ -43,7 +49,7 @@ __global__ void find_nonce_random_kernel(const uint32_t* input_state, uint32_t* 
     // Generate random nonce (uint32 penuh: 0 - 0xFFFFFFFF)
     uint32_t nonce = curand(&localState);
 
-    // Simpan kembali state random (agar pemanggilan berikutnya berbeda)
+    // Simpan kembali state random
     globalState[idx] = localState;
 
     // --- LOGIKA MINING ---
@@ -53,7 +59,7 @@ __global__ void find_nonce_random_kernel(const uint32_t* input_state, uint32_t* 
     w[0] = input_state[8];
     w[1] = input_state[9];
     w[2] = input_state[10];
-    w[3] = nonce; // Nonce acak yang sudah di-LEV
+    w[3] = nonce; // Nonce acak
     w[4] = 0x80000000;
     
     #pragma unroll
@@ -128,11 +134,11 @@ __global__ void find_nonce_random_kernel(const uint32_t* input_state, uint32_t* 
         h = g; g = f; f = e; e = d + temp1;
         d = c; c = b; b = a; a = temp1 + temp2;
     }
+
     // --- STEP 5: CHECK RESULT ---
     uint32_t diff_target1 = input_state[11];
     uint32_t diff_target2 = input_state[12];
 
-    // Hitung nilai yang akan dicek (sesuai Python)
     uint32_t h37 = (0x5be0cd19 + h);
     if (h37 != 0x00000000) return;
     uint32_t h36 = (0x1f83d9ab + g);
@@ -141,48 +147,73 @@ __global__ void find_nonce_random_kernel(const uint32_t* input_state, uint32_t* 
     if (cuda_lev(h35) > diff_target2) return;
 
     // Found valid nonce!
-    atomicCAS(result_nonce, 0xFFFFFFFF, nonce);
+    // Gunakan atomicAdd untuk mendapatkan indeks array yang aman dan unik
+    uint32_t index = atomicAdd(found_count, 1);
+    
+    // Pastikan tidak melebihi kapasitas buffer
+    if (index < max_results) {
+        result_buffer[index] = nonce;
+    }
 }
 
 extern "C" {
-    // seed digunakan agar setiap kali run dari Python hasilnya beda (bisa pakai time.time())
-    uint32_t run_gpu_miner(uint32_t* input_data, unsigned long seed) {
-        uint32_t *d_input, *d_result;
+    // Fungsi return int: jumlah nonce yang ditemukan
+    int run_gpu_miner(uint32_t* input_data, unsigned long seed, uint32_t* output_buffer, int max_results) {
+        uint32_t *d_input, *d_result_buffer, *d_found_count;
         curandState *d_states;
-        uint32_t h_result = 0xFFFFFFFF;
+        uint32_t h_found_count = 0;
 
         // Konfigurasi Grid
-        int threadsPerBlock = 256;
-        int blocksPerGrid = 768; // Jumlah block bisa dinaikkan untuk paraleleisme lebih tinggi
+        int threadsPerBlock = 320;
+        int blocksPerGrid = 320; 
         int totalThreads = threadsPerBlock * blocksPerGrid;
 
         // Alokasi Memory
         cudaMalloc((void**)&d_input, 13 * sizeof(uint32_t));
-        cudaMalloc((void**)&d_result, sizeof(uint32_t));
-        cudaMalloc((void**)&d_states, totalThreads * sizeof(curandState)); // Memory untuk state random
+        cudaMalloc((void**)&d_result_buffer, max_results * sizeof(uint32_t));
+        cudaMalloc((void**)&d_found_count, sizeof(uint32_t));
+        cudaMalloc((void**)&d_states, totalThreads * sizeof(curandState));
 
-        // Copy Data
+        // Copy Input Data
         cudaMemcpy(d_input, input_data, 13 * sizeof(uint32_t), cudaMemcpyHostToDevice);
-        cudaMemcpy(d_result, &h_result, sizeof(uint32_t), cudaMemcpyHostToDevice);
+        
+        // Reset counter ke 0
+        cudaMemset(d_found_count, 0, sizeof(uint32_t));
 
         // --- STEP A: Inisialisasi RNG (Hanya sekali) ---
         setup_curand<<<blocksPerGrid, threadsPerBlock>>>(d_states, seed);
         
         // --- STEP B: Looping Mining ---
+        // Loop berjalan penuh sesuai permintaan (tidak break ketika ketemu 1)
         for (int i = 0; i < 2000; i++) {
-            find_nonce_random_kernel<<<blocksPerGrid, threadsPerBlock>>>(d_input, d_result, d_states);
-            
-            // Cek hasil setiap batch
-            cudaMemcpy(&h_result, d_result, sizeof(uint32_t), cudaMemcpyDeviceToHost);
-            if (h_result != 0xFFFFFFFF) {
-                break;
-            }
+            find_nonce_random_kernel<<<blocksPerGrid, threadsPerBlock>>>(
+                d_input, 
+                d_result_buffer, 
+                d_found_count,
+                (uint32_t)max_results,
+                d_states
+            );
+            // Kita tidak break disini agar loop selesai penuh (mirip dengan menunggu input selesai)
+        }
+        
+        // Sinkronisasi akhir untuk memastikan semua kernel selesai
+        cudaDeviceSynchronize();
+
+        // Ambil jumlah yang ditemukan
+        cudaMemcpy(&h_found_count, d_found_count, sizeof(uint32_t), cudaMemcpyDeviceToHost);
+
+        // Jika ada hasil, copy nonces ke host buffer
+        if (h_found_count > 0) {
+            // Clamp count agar tidak overflow buffer host jika entah bagaimana GPU error
+            if (h_found_count > max_results) h_found_count = max_results;
+            cudaMemcpy(output_buffer, d_result_buffer, h_found_count * sizeof(uint32_t), cudaMemcpyDeviceToHost);
         }
 
         cudaFree(d_input);
-        cudaFree(d_result);
+        cudaFree(d_result_buffer);
+        cudaFree(d_found_count);
         cudaFree(d_states);
 
-        return h_result;
+        return (int)h_found_count;
     }
 }
