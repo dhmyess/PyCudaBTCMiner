@@ -2,6 +2,7 @@ import ctypes
 import os
 import time
 import hashlib
+
 # Load library
 lib_name = "./liblooper.so" if os.name == 'posix' else "./liblooper.dll"
 if not os.path.exists(lib_name):
@@ -9,12 +10,23 @@ if not os.path.exists(lib_name):
     exit()
 
 cuda_miner = ctypes.CDLL(os.path.abspath(lib_name))
-# Argumen: (Pointer Data, Seed)
-cuda_miner.run_gpu_miner.argtypes = [ctypes.POINTER(ctypes.c_uint32), ctypes.c_ulong]
-cuda_miner.run_gpu_miner.restype = ctypes.c_uint32
+
+# Konstanta batas maksimum output (buffer size)
+MAX_RESULTS = 100
+
+# Argumen: (Pointer Input, Pointer Output Buffer, Max Results)
+# Perhatikan: Tidak ada seed karena ini linear loop
+cuda_miner.run_gpu_miner.argtypes = [
+    ctypes.POINTER(ctypes.c_uint32), 
+    ctypes.POINTER(ctypes.c_uint32),
+    ctypes.c_int
+]
+# Return: Jumlah nonce yang ditemukan (int)
+cuda_miner.run_gpu_miner.restype = ctypes.c_int
 
 def right_rotate(value, bits):
     return ((value >> bits) | (value << (32 - bits))) & 0xFFFFFFFF
+
 def lev(nonce):
     byte0 = (nonce & 0xFF000000) >> 24
     byte1 = (nonce & 0x00FF0000) >> 16
@@ -34,7 +46,7 @@ def mining_nonce(hex_header, pool_target):
         value = int(chunk, 16)
         pw.append(value)
 
-    # --- Bagian Awal (Midstate Calculation) ---
+    # --- SHA-256 State Setup ---
     h0 = 0x6a09e667
     h1 = 0xbb67ae85
     h2 = 0x3c6ef372
@@ -104,27 +116,36 @@ def mining_nonce(hex_header, pool_target):
             else:
                 diff_target1 = 0
                 diff_target2 = 0
-    # Input ke GPU
+
+    # Input ke GPU (Pointer input)
     input_data = (ctypes.c_uint32 * 13)(
         h10, h11, h12, h13, h14, h15, h16, h17,
         pw[16], pw[17], pw[18], diff_target1, diff_target2
     )
 
-    # Gunakan waktu sekarang sebagai seed random
-    seed = int(time.time_ns() & 0xffffffff)
+    # Persiapkan Buffer Output
+    output_buffer = (ctypes.c_uint32 * MAX_RESULTS)()
 
-    #print(f"Mengirim data ke GPU (Random Mode, Seed: {seed})...")
-    le = cuda_miner.run_gpu_miner(input_data, seed)
+    # Call GPU function (Blocking until 0-FFFFFFFF done)
+    count_found = cuda_miner.run_gpu_miner(input_data, output_buffer, MAX_RESULTS)
 
-    if le == 0xFFFFFFFF:
-        return None, None
-    else:
-        levnonce = le
-        full_header = hex_header + f"{levnonce:08x}"
-        final_hash = double_sha256_hex(full_header)
-        nonce = lev(le)
-        byte_chunks = [final_hash[i:i+2] for i in range(0, len(final_hash), 2)]
-        reversed_chunks = byte_chunks[::-1]
-        blockhash = "".join(reversed_chunks)
-        diff = 0x00000000ffff0000000000000000000000000000000000000000000000000000 / int(blockhash, 16)
-        return nonce, blockhash
+    found_shares = []
+
+    # Jika count_found > 0, kita proses semua nonce yang ditemukan
+    if count_found > 0:
+        for i in range(count_found):
+            le = output_buffer[i]
+            
+            # Reconstruct
+            levnonce = le
+            full_header = hex_header + f"{levnonce:08x}"
+            final_hash = double_sha256_hex(full_header)
+            nonce = lev(le) # Mengembalikan ke Big Endian / Integer asli
+            
+            byte_chunks = [final_hash[i:i+2] for i in range(0, len(final_hash), 2)]
+            reversed_chunks = byte_chunks[::-1]
+            blockhash = "".join(reversed_chunks)
+            
+            found_shares.append((nonce, blockhash))
+
+    return found_shares
