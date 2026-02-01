@@ -2,10 +2,10 @@
 #include <cuda_runtime.h>
 #include <stdio.h>
 
-// Macro untuk rotasi bit (sesuai definisi SHA-256)
+// Macro rotasi bit SHA-256
 #define ROTR(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
 
-// Konstanta SHA-256 (disimpan di device constant memory untuk kecepatan)
+// Konstanta K SHA-256
 __constant__ uint32_t K[64] = {
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
@@ -16,6 +16,7 @@ __constant__ uint32_t K[64] = {
     0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 };
+
 // Fungsi LEV (Little Endian Value)
 __device__ __forceinline__ uint32_t cuda_lev(uint32_t val) {
     return ((val & 0xFF000000) >> 24) |
@@ -24,32 +25,31 @@ __device__ __forceinline__ uint32_t cuda_lev(uint32_t val) {
            ((val & 0x000000FF) << 24);
 }
 
-__global__ void find_nonce_kernel(const uint32_t* input_state, uint32_t* result_nonce, uint32_t start_nonce) {
-    // Hitung nonce berdasarkan index thread
+// Kernel Mining Linear (Grid Stride / Offset Based)
+__global__ void find_nonce_kernel(
+    const uint32_t* input_state, 
+    uint32_t* result_buffer, 
+    uint32_t* found_count,
+    uint32_t start_nonce,
+    uint32_t max_results
+) {
     uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     uint32_t nonce = start_nonce + idx;
 
-    // input_state structure:
-    // [0-7]: h10..h17 (Midstate)
-    // [8-10]: pw[8], pw[9], pw[10] (Data block 2 awal)
-    
-    // --- STEP 1: PREPARE W2 ---
-    uint32_t w[64];
+    // --- LOGIKA MINING ---
 
-    // Load static parts of W2
+    // Step 1: Prepare W2
+    uint32_t w[64];
     w[0] = input_state[8];
     w[1] = input_state[9];
     w[2] = input_state[10];
-    w[3] = nonce; // Apply LEV to nonce
-    w[4] = 0x80000000;      // Padding bit
+    w[3] = nonce; // Nonce Linear
+    w[4] = 0x80000000;
     
-    // Zero out middle
     #pragma unroll
     for(int i=5; i<15; i++) w[i] = 0;
-    
-    w[15] = 0x00000280;     // Length (640 bits)
+    w[15] = 0x280;
 
-    // Message Schedule W2 (16 to 63)
     #pragma unroll
     for (int i = 16; i < 64; i++) {
         uint32_t s0 = ROTR(w[i-15], 7) ^ ROTR(w[i-15], 18) ^ (w[i-15] >> 3);
@@ -57,15 +57,15 @@ __global__ void find_nonce_kernel(const uint32_t* input_state, uint32_t* result_
         w[i] = w[i-16] + s0 + w[i-7] + s1;
     }
 
-    // --- STEP 2: COMPRESSION ROUND 1 ---
-    uint32_t a = input_state[0]; // h10
-    uint32_t b = input_state[1]; // h11
-    uint32_t c = input_state[2]; // h12
-    uint32_t d = input_state[3]; // h13
-    uint32_t e = input_state[4]; // h14
-    uint32_t f = input_state[5]; // h15
-    uint32_t g = input_state[6]; // h16
-    uint32_t h = input_state[7]; // h17
+    // Step 2: Compression Round 1
+    uint32_t a = input_state[0]; 
+    uint32_t b = input_state[1]; 
+    uint32_t c = input_state[2]; 
+    uint32_t d = input_state[3]; 
+    uint32_t e = input_state[4]; 
+    uint32_t f = input_state[5]; 
+    uint32_t g = input_state[6]; 
+    uint32_t h = input_state[7];
 
     #pragma unroll
     for (int i = 0; i < 64; i++) {
@@ -80,9 +80,6 @@ __global__ void find_nonce_kernel(const uint32_t* input_state, uint32_t* result_
         d = c; c = b; b = a; a = temp1 + temp2;
     }
 
-    // Intermediate Hash (h20..h27)
-    // Langsung masukkan ke buffer w3 untuk tahap selanjutnya
-    // w[0-7] sekarang berisi hash result dari ronde 1
     w[0] = input_state[0] + a;
     w[1] = input_state[1] + b;
     w[2] = input_state[2] + c;
@@ -92,15 +89,12 @@ __global__ void find_nonce_kernel(const uint32_t* input_state, uint32_t* result_
     w[6] = input_state[6] + g;
     w[7] = input_state[7] + h;
 
-    // --- STEP 3: PREPARE W3 (Double SHA) ---
+    // Step 3: Prepare W3
     w[8] = 0x80000000;
-    
     #pragma unroll
     for(int i=9; i<15; i++) w[i] = 0;
-    
-    w[15] = 0x00000100; // Length (256 bits)
+    w[15] = 0x100;
 
-    // Message Schedule W3
     #pragma unroll
     for (int i = 16; i < 64; i++) {
         uint32_t s0 = ROTR(w[i-15], 7) ^ ROTR(w[i-15], 18) ^ (w[i-15] >> 3);
@@ -108,8 +102,7 @@ __global__ void find_nonce_kernel(const uint32_t* input_state, uint32_t* result_
         w[i] = w[i-16] + s0 + w[i-7] + s1;
     }
 
-    // --- STEP 4: COMPRESSION ROUND 2 ---
-    // Standard IV for SHA-256
+    // Step 4: Compression Round 2
     a = 0x6a09e667; b = 0xbb67ae85; c = 0x3c6ef372; d = 0xa54ff53a;
     e = 0x510e527f; f = 0x9b05688c; g = 0x1f83d9ab; h = 0x5be0cd19;
 
@@ -130,7 +123,6 @@ __global__ void find_nonce_kernel(const uint32_t* input_state, uint32_t* result_
     uint32_t diff_target1 = input_state[11];
     uint32_t diff_target2 = input_state[12];
 
-    // Hitung nilai yang akan dicek (sesuai Python)
     uint32_t h37 = (0x5be0cd19 + h);
     if (h37 != 0x00000000) return;
     uint32_t h36 = (0x1f83d9ab + g);
@@ -139,50 +131,71 @@ __global__ void find_nonce_kernel(const uint32_t* input_state, uint32_t* result_
     if (cuda_lev(h35) > diff_target2) return;
 
     // Found valid nonce!
-    atomicCAS(result_nonce, 0xFFFFFFFF, nonce);
+    // Simpan ke buffer menggunakan atomic index
+    uint32_t index = atomicAdd(found_count, 1);
+    
+    // Pastikan tidak overflow buffer
+    if (index < max_results) {
+        result_buffer[index] = nonce;
+    }
 }
 
 extern "C" {
-    // Wrapper function untuk dipanggil dari Python
-    uint32_t run_gpu_miner(uint32_t* input_data) {
-        uint32_t *d_input, *d_result;
-        uint32_t h_result = 0xFFFFFFFF; // Init dengan nilai not found
+    // Fungsi ini akan melakukan loop penuh dari 0 s/d 0xFFFFFFFF
+    int run_gpu_miner(uint32_t* input_data, uint32_t* output_buffer, int max_results) {
+        uint32_t *d_input, *d_result_buffer, *d_found_count;
+        uint32_t h_found_count = 0;
 
-        // Alokasi memori GPU
-        cudaMalloc((void**)&d_input, 13 * sizeof(uint32_t));
-        cudaMalloc((void**)&d_result, sizeof(uint32_t));
-
-        // Copy input data (h10-h17 dan pw[8-10]) ke GPU
-        cudaMemcpy(d_input, input_data, 13 * sizeof(uint32_t), cudaMemcpyHostToDevice);
-        cudaMemcpy(d_result, &h_result, sizeof(uint32_t), cudaMemcpyHostToDevice);
-
-        // Konfigurasi Kernel
-        // Total threads harus mencakup range pencarian. 
-        // 256 block x 256 threads = 65536 concurrent threads.
-        // Kita lakukan looping di kernel call atau grid striding, tapi untuk simpel
-        // kita luncurkan massive grid atau loop di host.
-        
-        // Agar efisien, kita luncurkan grid besar.
-        // Misal: 65535 blocks * 512 threads ~= 33 Juta hash per launch.
-        // Kita loop kernel launch sampai max uint32.
-        
+        // Grid Configuration
+        // GPU Modern bisa menangani grid besar. 
+        // 256 thread per block adalah ukuran standar yang aman.
         int threadsPerBlock = 256;
-        int blocksPerGrid = 65535;
+        int blocksPerGrid = 8192; // 256 * 8192 = 2,097,152 threads per batch launch
         uint32_t batch_size = threadsPerBlock * blocksPerGrid;
 
-        for (uint64_t start = 0; start < 0xFFFFFFFF; start += batch_size) {
-            find_nonce_kernel<<<blocksPerGrid, threadsPerBlock>>>(d_input, d_result, (uint32_t)start);
+        // Alokasi Memory
+        cudaMalloc((void**)&d_input, 13 * sizeof(uint32_t));
+        cudaMalloc((void**)&d_result_buffer, max_results * sizeof(uint32_t));
+        cudaMalloc((void**)&d_found_count, sizeof(uint32_t));
+
+        // Init Data
+        cudaMemcpy(d_input, input_data, 13 * sizeof(uint32_t), cudaMemcpyHostToDevice);
+        cudaMemset(d_found_count, 0, sizeof(uint32_t)); // Counter dimulai dari 0
+
+        // --- FULL LOOP 0 to 0xFFFFFFFF ---
+        // Kita loop di host agar tidak kena Timeout (TDR) OS jika loop di dalam kernel terlalu lama
+        for (uint64_t start = 0; start <= 0xFFFFFFFF; start += batch_size) {
             
-            // Cek apakah sudah ketemu (copy flag balik)
-            cudaMemcpy(&h_result, d_result, sizeof(uint32_t), cudaMemcpyDeviceToHost);
-            if (h_result != 0xFFFFFFFF) {
-                break;
-            }
+            // Cek overflow untuk batch terakhir
+            if (start > 0xFFFFFFFF) break;
+
+            find_nonce_kernel<<<blocksPerGrid, threadsPerBlock>>>(
+                d_input, 
+                d_result_buffer, 
+                d_found_count,
+                (uint32_t)start,
+                (uint32_t)max_results
+            );
+
+            // Opsional: Synchronize setiap beberapa batch untuk memastikan GPU tidak freeze UI/OS
+            // Tapi untuk performa maksimal, kita bisa minimize sync.
+            // Kita sync di akhir loop saja jika memungkinkan, atau per batch.
+            // Sync per batch lebih aman:
+            cudaDeviceSynchronize();
+        }
+        
+        // Ambil hasil akhir
+        cudaMemcpy(&h_found_count, d_found_count, sizeof(uint32_t), cudaMemcpyDeviceToHost);
+
+        if (h_found_count > 0) {
+            if (h_found_count > max_results) h_found_count = max_results;
+            cudaMemcpy(output_buffer, d_result_buffer, h_found_count * sizeof(uint32_t), cudaMemcpyDeviceToHost);
         }
 
         cudaFree(d_input);
-        cudaFree(d_result);
+        cudaFree(d_result_buffer);
+        cudaFree(d_found_count);
 
-        return h_result;
+        return (int)h_found_count;
     }
 }
