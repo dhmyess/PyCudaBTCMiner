@@ -150,7 +150,7 @@ extern "C" {
         // GPU Modern bisa menangani grid besar. 
         // 256 thread per block adalah ukuran standar yang aman.
         int threadsPerBlock = 256;
-        int blocksPerGrid = 8192; // 256 * 8192 = 2,097,152 threads per batch launch
+        int blocksPerGrid = 65536; // 256 * 65536 = 16,777,216 threads per batch launch
         uint32_t batch_size = threadsPerBlock * blocksPerGrid;
 
         // Alokasi Memory
