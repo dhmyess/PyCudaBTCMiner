@@ -2,6 +2,7 @@ import ctypes
 import os
 import time
 import hashlib
+
 # Load library
 lib_name = "./rr.so" if os.name == 'posix' else "./rr.dll"
 if not os.path.exists(lib_name):
@@ -9,12 +10,23 @@ if not os.path.exists(lib_name):
     exit()
 
 cuda_miner = ctypes.CDLL(os.path.abspath(lib_name))
-# Argumen: (Pointer Data, Seed)
-cuda_miner.run_gpu_miner.argtypes = [ctypes.POINTER(ctypes.c_uint32), ctypes.c_ulong]
-cuda_miner.run_gpu_miner.restype = ctypes.c_uint32
+
+# Konstanta batas maksimum output (harus sama/lebih kecil dari alokasi Python, tapi sinkron dengan logika C)
+MAX_RESULTS = 20
+
+# Argumen: (Pointer Input, Seed, Pointer Output Buffer, Max Results)
+cuda_miner.run_gpu_miner.argtypes = [
+    ctypes.POINTER(ctypes.c_uint32), 
+    ctypes.c_ulong,
+    ctypes.POINTER(ctypes.c_uint32),
+    ctypes.c_int
+]
+# Return: Jumlah nonce yang ditemukan (int)
+cuda_miner.run_gpu_miner.restype = ctypes.c_int
 
 def right_rotate(value, bits):
     return ((value >> bits) | (value << (32 - bits))) & 0xFFFFFFFF
+
 def lev(nonce):
     byte0 = (nonce & 0xFF000000) >> 24
     byte1 = (nonce & 0x00FF0000) >> 16
@@ -104,27 +116,41 @@ def mining_nonce(hex_header, pool_target):
             else:
                 diff_target1 = 0
                 diff_target2 = 0
+
     # Input ke GPU
     input_data = (ctypes.c_uint32 * 13)(
         h10, h11, h12, h13, h14, h15, h16, h17,
         pw[16], pw[17], pw[18], diff_target1, diff_target2
     )
 
+    # Persiapkan Buffer Output
+    output_buffer = (ctypes.c_uint32 * MAX_RESULTS)()
+
     # Gunakan waktu sekarang sebagai seed random
     seed = int(time.time_ns() & 0xffffffff)
 
-    #print(f"Mengirim data ke GPU (Random Mode, Seed: {seed})...")
-    le = cuda_miner.run_gpu_miner(input_data, seed)
+    # Call GPU function
+    count_found = cuda_miner.run_gpu_miner(input_data, seed, output_buffer, MAX_RESULTS)
 
-    if le == 0xFFFFFFFF:
-        return None, None
-    else:
-        levnonce = le
-        full_header = hex_header + f"{levnonce:08x}"
-        final_hash = double_sha256_hex(full_header)
-        nonce = lev(le)
-        byte_chunks = [final_hash[i:i+2] for i in range(0, len(final_hash), 2)]
-        reversed_chunks = byte_chunks[::-1]
-        blockhash = "".join(reversed_chunks)
-        diff = 0x00000000ffff0000000000000000000000000000000000000000000000000000 / int(blockhash, 16)
-        return nonce, blockhash
+    found_shares = []
+
+    # Loop selesai (ini yang Anda maksud dengan output -1, secara teknis function return berarti selesai)
+    # Jika count_found == 0, berarti tidak ada share.
+    if count_found > 0:
+        for i in range(count_found):
+            le = output_buffer[i]
+            
+            # Reconstruct data
+            levnonce = le
+            full_header = hex_header + f"{levnonce:08x}"
+            final_hash = double_sha256_hex(full_header)
+            nonce = lev(le)
+            
+            byte_chunks = [final_hash[i:i+2] for i in range(0, len(final_hash), 2)]
+            reversed_chunks = byte_chunks[::-1]
+            blockhash = "".join(reversed_chunks)
+            
+            # Tambahkan ke list hasil
+            found_shares.append((nonce, blockhash))
+
+    return found_shares
