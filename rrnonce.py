@@ -3,10 +3,11 @@ import os
 import time
 import hashlib
 import random
-
+# --- Konfigurasi Library ---
 lib_name = "./rr.so" if os.name == 'posix' else "./rr.dll"
 cuda_miner = ctypes.CDLL(os.path.abspath(lib_name))
 
+# Konstanta
 MAX_RESULTS = 10
 
 cuda_miner.run_gpu_miner.argtypes = [
@@ -16,8 +17,6 @@ cuda_miner.run_gpu_miner.argtypes = [
     ctypes.c_int
 ]
 cuda_miner.run_gpu_miner.restype = ctypes.c_int
-
-
 
 def double_sha256_hex(hexdata):
     b = bytes.fromhex(hexdata)
@@ -35,6 +34,7 @@ def lev(nonce):
     return little_endian_value
 
 def get_target_params(target_miner):
+
     if target_miner < 1:
         diff_target1 = 0xffff0000
         diff_target2 = 0xffffffff
@@ -51,9 +51,7 @@ def get_target_params(target_miner):
                 diff_target2 = 0
     return diff_target1, diff_target2
 
-def mining_nonce(header_hex, target_miner, batch_number):
-    from midstate import fchunk # Asumsi fungsi midstate extractor Anda
-
+def mining_nonce(header_hex, target_miner,batch_number):
     START_NONCES = []
     random_space = (0xffffffff - (batch_number * (256*4096))) // batch_number
     for i in range(batch_number):
@@ -62,12 +60,14 @@ def mining_nonce(header_hex, target_miner, batch_number):
         if yy > (0xffffffff - (256*4096)):
             break
         START_NONCES.append(yy)
+
+    from midstate import fchunk
     h10, h11, h12, h13, h14, h15, h16, h17, pw1, pw2, pw3 = fchunk(header_hex)
     
     dt1, dt2 = get_target_params(target_miner)
     
     final_results = []
-    
+
     for s_nonce in START_NONCES:
         input_data = (ctypes.c_uint32 * 13)(
             h10, h11, h12, h13, h14, h15, h16, h17,

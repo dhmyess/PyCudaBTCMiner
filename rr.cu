@@ -38,11 +38,11 @@ __global__ void find_nonce_kernel(
     w[3] = nonce;
     w[4] = 0x80000000;
     
-
+    #pragma unroll
     for(int i=5; i<15; i++) w[i] = 0;
     w[15] = 0x280;
 
-
+    #pragma unroll
     for (int i = 16; i < 64; i++) {
         uint32_t s0 = ROTR(w[i-15], 7) ^ ROTR(w[i-15], 18) ^ (w[i-15] >> 3);
         uint32_t s1 = ROTR(w[i-2], 17) ^ ROTR(w[i-2], 19) ^ (w[i-2] >> 10);
@@ -58,7 +58,7 @@ __global__ void find_nonce_kernel(
     uint32_t g = input_state[6]; 
     uint32_t h = input_state[7];
 
-
+    #pragma unroll
     for (int i = 0; i < 64; i++) {
         uint32_t S1 = ROTR(e, 6) ^ ROTR(e, 11) ^ ROTR(e, 25);
         uint32_t ch = (e & f) ^ ((~e) & g);
@@ -81,11 +81,11 @@ __global__ void find_nonce_kernel(
     w[7] = input_state[7] + h;
 
     w[8] = 0x80000000;
-
+    #pragma unroll
     for(int i=9; i<15; i++) w[i] = 0;
     w[15] = 0x100;
 
-
+    #pragma unroll
     for (int i = 16; i < 64; i++) {
         uint32_t s0 = ROTR(w[i-15], 7) ^ ROTR(w[i-15], 18) ^ (w[i-15] >> 3);
         uint32_t s1 = ROTR(w[i-2], 17) ^ ROTR(w[i-2], 19) ^ (w[i-2] >> 10);
@@ -95,7 +95,7 @@ __global__ void find_nonce_kernel(
     a = 0x6a09e667; b = 0xbb67ae85; c = 0x3c6ef372; d = 0xa54ff53a;
     e = 0x510e527f; f = 0x9b05688c; g = 0x1f83d9ab; h = 0x5be0cd19;
 
-
+    #pragma unroll
     for (int i = 0; i < 64; i++) {
         uint32_t S1 = ROTR(e, 6) ^ ROTR(e, 11) ^ ROTR(e, 25);
         uint32_t ch = (e & f) ^ ((~e) & g);
@@ -107,8 +107,6 @@ __global__ void find_nonce_kernel(
         h = g; g = f; f = e; e = d + temp1;
         d = c; c = b; b = a; a = temp1 + temp2;
     }
-
-
     uint32_t res_h37 = h + 0x5be0cd19; 
 
     if (res_h37 == 0) {

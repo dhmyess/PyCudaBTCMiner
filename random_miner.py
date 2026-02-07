@@ -224,13 +224,14 @@ def mine_loop():
                     client.extranonce1,
                     extranonce2
                 )
-                # 4. Mining
+               
+                # 4. EXECUTE MINER (FULL LOOP)
                 found_shares_list = mining_nonce(header_hex, target_miner,config["batch_number"])
 
                 stop_time = time.time()
                 elapse_time = stop_time - start_time
 
-                # 5. Submit
+                # 5. Submit SEMUA share yang ditemukan
                 if found_shares_list:
                     for (nonce, blockhash) in found_shares_list:
                         found_difficulty = 0x00000000ffff0000000000000000000000000000000000000000000000000000 / int(blockhash, 16)
@@ -238,11 +239,10 @@ def mine_loop():
                         current_time_string = now.strftime("%H:%M:%S")
                         
                         print(f"  [✅] {current_time_string} Found Share!")
-                        print(f"       Job ID       : {current_job[0]}")
-                        print(f"       extranonce2  : {extranonce2}")
-                        print(f"       Nonce        : {nonce:08x}")
-                        print(f"       Hash         : {blockhash}")
-                        print(f"       Diff         : {found_difficulty:.2f}")
+                        print(f"       Job ID: {current_job[0]}")
+                        print(f"       Nonce : {nonce:08x}")
+                        print(f"       Hash  : {blockhash}")
+                        print(f"       Diff  : {found_difficulty:.2f}")
 
                         params = [
                             config["user_name"],
@@ -255,7 +255,7 @@ def mine_loop():
                 else:
                     pass
 
-                # 6. Ganti Extranonce2
+                # 6. Ganti Extranonce2 setelah 1 full loop selesai
                 en2_counter += 1
                 extranonce2_int = random.randint(0,0xffffffff)
 
