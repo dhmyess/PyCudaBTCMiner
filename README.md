@@ -124,6 +124,8 @@ If you're using `random_miner.py` and want to increase the number of nonces trie
 
 1. Open `random_miner.py` file
 2. change batch_number in config:
+```python
+
 config = {
     "pool_address": "127.0.0.1",
     "pool_port": 3333,
@@ -135,6 +137,7 @@ config = {
     "reconnect_backoff": 5.0,
     "max_extranonce2": 0xFFFFFFFF
 }
+```
 3. If you want to change how many nonce launch per batch edit rr.cu`line 134, 135
    int threadsPerBlock = 256;
    int blocksPerGrid = 4096;
