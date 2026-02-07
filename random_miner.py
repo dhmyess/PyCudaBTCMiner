@@ -6,17 +6,18 @@ import sys
 import traceback
 import random
 from datetime import datetime
-from rrnonce import mining_nonce
+from rrnonce import mining_nonce, lev
 
 # -------------------------------
 # CONFIG
 # -------------------------------
 config = {
-    "pool_address": "public-pool.io",
+    "pool_address": "127.0.0.1",
     "pool_port": 3333,
     "user_name": "bc1qngzehzs73x2p5k7r7pa7na69ej89p40qxnrh60",
     "password": "x",
-    "min_diff": 1,
+    "min_diff": 16,
+    "batch_number": 42,
     "poll_sleep": 0.05,
     "reconnect_backoff": 5.0,
     "max_extranonce2": 0xFFFFFFFF
@@ -44,7 +45,7 @@ class StratumClient:
             except Exception:
                 pass
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.settimeout(10.0)
+        self.sock.settimeout(20.0) # Timeout lebih panjang karena full loop mungkin lama
         self.sock.connect((self.host, self.port))
         self.buffer = b""
         self.connected = True
@@ -67,10 +68,13 @@ class StratumClient:
 
     def recv_blocking_line(self):
         while b"\n" not in self.buffer:
-            data = self.sock.recv(4096)
-            if not data:
-                raise Exception("Disconnected")
-            self.buffer += data
+            try:
+                data = self.sock.recv(4096)
+                if not data:
+                    raise Exception("Disconnected")
+                self.buffer += data
+            except socket.timeout:
+                pass # Continue waiting
         line, self.buffer = self.buffer.split(b"\n", 1)
         return json.loads(line.decode())
 
@@ -93,7 +97,7 @@ class StratumClient:
             except Exception:
                 break
         
-        self.sock.settimeout(10.0)
+        self.sock.settimeout(20.0)
 
         while b"\n" in self.buffer:
             line, self.buffer = self.buffer.split(b"\n", 1)
@@ -172,7 +176,6 @@ def mine_loop():
             en2_counter = 0
             target_miner = client.difficulty
             start_time = time.time()
-            
             while client.connected:
                 # 1. Poll messages
                 for msg in client.poll_message():
@@ -182,15 +185,15 @@ def mine_loop():
                         new_clean_job = new_job[8]
 
                         if new_job_id != current_job_id or new_clean_job:
-                            reason = "Clean Job" if new_clean_job else "New Job ID"
                             stop_time = time.time()
                             elapse_time = stop_time - start_time
-                            print(f"   [i] {en2_counter} extranonce2 has been tried in {elapse_time:.2f} second")
-                            print(f"[+] {reason} detected! Switching to job: {new_job_id}")
-
+                            rate = ((en2_counter*(256*4096*config["batch_number"]))/elapse_time)/1000000
+                            print(f"  [i] {en2_counter} extranonce2 has been tried in {elapse_time:.2f} hashrate = {rate:.2f} MH/s")
+                            print(f"[+] New Job detected! ID: {new_job_id}")
                             current_job = new_job
                             current_job_id = new_job_id
                             
+                            # Reset loop logic for new job
                             start_time = time.time()
                             en2_counter = 0
                             extranonce2_int = random.randint(0,0xffffffff)
@@ -222,12 +225,19 @@ def mine_loop():
                     extranonce2
                 )
 
-                # 5. EXECUTE MINER
-                # Ini sekarang akan menjalankan loop penuh di C, lalu kembali.
-                # Jika hasil kosong (list kosong), berarti tidak ada share di batch ini.
-                found_shares_list = mining_nonce(header_hex, target_miner)
+               
+                # 4. EXECUTE MINER (FULL LOOP)
+                # mining_nonce di sini akan memanggil liblooper.so yg meloop dari 0 - 0xFFFFFFFF
+                # Hasilnya berupa list of tuples [(nonce, hash), ...]
+                found_shares_list = mining_nonce(header_hex, target_miner,config["batch_number"])
 
-                # 6. Submit SEMUA share yang ditemukan
+                stop_time = time.time()
+                elapse_time = stop_time - start_time
+                
+                # Hitung hashrate berdasarkan scan penuh
+                # 0xFFFFFFFF = 4,294,967,295 hashes
+
+                # 5. Submit SEMUA share yang ditemukan
                 if found_shares_list:
                     for (nonce, blockhash) in found_shares_list:
                         found_difficulty = 0x00000000ffff0000000000000000000000000000000000000000000000000000 / int(blockhash, 16)
@@ -235,11 +245,11 @@ def mine_loop():
                         current_time_string = now.strftime("%H:%M:%S")
                         
                         print(f"  [✅] {current_time_string} Found Share!")
-                        print(f"       Job ID: {current_job[0]}")
-                        print(f"       EN2   : {extranonce2}")
-                        print(f"       Nonce : {nonce:08x}")
-                        print(f"       Hash  : {blockhash}")
-                        print(f"       Diff  : {found_difficulty:.2f}")
+                        print(f"       Job ID       : {current_job[0]}")
+                        print(f"       extranonce2  : {extranonce2}")
+                        print(f"       Nonce        : {nonce:08x}")
+                        print(f"       Hash         : {blockhash}")
+                        print(f"       Diff         : {found_difficulty:.2f}")
 
                         params = [
                             config["user_name"],
@@ -249,9 +259,11 @@ def mine_loop():
                             f"{nonce:08x}"
                         ]
                         client.send("mining.submit", params)
-                
-                # 7. Increment Extranonce2
-                # Kode C sudah return (selesai loop), saatnya ganti extranonce2 (Input Baru)
+                else:
+                    # Jika list kosong (-1 logic), berarti tidak ada share di range ini
+                    pass
+
+                # 6. Ganti Extranonce2 setelah 1 full loop selesai
                 en2_counter += 1
                 extranonce2_int = random.randint(0,0xffffffff)
 
@@ -270,4 +282,3 @@ def mine_loop():
 
 if __name__ == "__main__":
     mine_loop()
-
