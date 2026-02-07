@@ -3,14 +3,12 @@ import os
 import time
 import hashlib
 import random
-# --- Konfigurasi Library ---
+
 lib_name = "./rr.so" if os.name == 'posix' else "./rr.dll"
 cuda_miner = ctypes.CDLL(os.path.abspath(lib_name))
 
-# Konstanta
-MAX_RESULTS = 10  # Maksimal temuan per batch
+MAX_RESULTS = 10
 
-# Argumen: (Pointer Input, Start Nonce, Pointer Output, Max Results)
 cuda_miner.run_gpu_miner.argtypes = [
     ctypes.POINTER(ctypes.c_uint32), 
     ctypes.c_uint32,
@@ -37,7 +35,6 @@ def lev(nonce):
     return little_endian_value
 
 def get_target_params(target_miner):
-    """Mengonversi target integer ke format diff_target1 dan diff_target2 untuk GPU."""
     if target_miner < 1:
         diff_target1 = 0xffff0000
         diff_target2 = 0xffffffff
@@ -55,9 +52,6 @@ def get_target_params(target_miner):
     return diff_target1, diff_target2
 
 def mining_nonce(header_hex, target_miner, batch_number):
-    """
-    Fungsi utama yang dipanggil oleh skrip eksternal.
-    """
     from midstate import fchunk # Asumsi fungsi midstate extractor Anda
 
     START_NONCES = []
@@ -68,18 +62,12 @@ def mining_nonce(header_hex, target_miner, batch_number):
         if yy > (0xffffffff - (256*4096)):
             break
         START_NONCES.append(yy)
-    # 1. Ekstrak Midstate dan parameter hashing
-    # Pastikan fchunk mengembalikan h10-h17, pw1-pw3
     h10, h11, h12, h13, h14, h15, h16, h17, pw1, pw2, pw3 = fchunk(header_hex)
     
-    # 2. Hitung target difficulty
     dt1, dt2 = get_target_params(target_miner)
     
-    final_results = [] # Tempat menyimpan hasil (nonce, hash)
+    final_results = []
     
-    #print(f"[*] Memulai mining: {len(START_NONCES)} batch.")
-
-    # 3. Loop utama melalui daftar nonce
     for s_nonce in START_NONCES:
         input_data = (ctypes.c_uint32 * 13)(
             h10, h11, h12, h13, h14, h15, h16, h17,
@@ -97,11 +85,10 @@ def mining_nonce(header_hex, target_miner, batch_number):
         if count > 0:
             for i in range(count):
                 found_nonce = output_buffer[i]
-                # Hitung hash asli untuk verifikasi (Double SHA256)
                 full_header = header_hex + f"{found_nonce:08x}"
                 final_hash = double_sha256_hex(full_header)
                 hash_result = rev_hex(final_hash)
                 
                 final_results.append((lev(found_nonce), hash_result))
     
-    return final_results # Kembalikan LIST, bukan integer!
+    return final_results
