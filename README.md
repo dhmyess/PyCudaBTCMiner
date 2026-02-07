@@ -122,21 +122,24 @@ This method will:
 
 If you're using `random_miner.py` and want to increase the number of nonces tried per extranonce2:
 
-1. Open `rr.cu` file
-2. Find lines 167 and 168:
-   ```c
-   int threadsPerBlock = 256;  // Threads per block
-   int blocksPerGrid = 768;    // Blocks per grid
-   ```
-3. Calculate total nonces = `1000 × threadsPerBlock × blocksPerGrid`
-   - Default: 1000 × 256 × 768 = 196,608,000 nonces
-4. Increase values if your GPU is powerful, example:
-   ```c
-   int threadsPerBlock = 512;
-   int blocksPerGrid = 1024;
-   // Total: 1000 × 512 × 1024 = 524,288,000 nonces
-   ```
-5. Recompile kernel by running `build.bat` or `build.sh`
+1. Open `random_miner.py` file
+2. change batch_number in config:
+config = {
+    "pool_address": "127.0.0.1",
+    "pool_port": 3333,
+    "user_name": "bc1qngzehzs73x2p5k7r7pa7na69ej89p40qxnrh60",
+    "password": "x",
+    "min_diff": 1,
+    "batch_number": 42,   # 1.048.576 nonce per batch x 42 = 44.040.192 sample nonce per extranonce2
+    "poll_sleep": 0.05,
+    "reconnect_backoff": 5.0,
+    "max_extranonce2": 0xFFFFFFFF
+}
+3. If you want to change how many nonce launch per batch edit rr.cu`line 134, 135
+   int threadsPerBlock = 256;
+   int blocksPerGrid = 4096;
+   nonce launch per batch = 256 * 4096 = 1.048.576
+4. Recompile kernel by running `build.bat` or `build.sh`
 
 ## Understanding Mining Concepts
 
