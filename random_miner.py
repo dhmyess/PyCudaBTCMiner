@@ -16,7 +16,7 @@ config = {
     "pool_port": 3333,
     "user_name": "bc1qngzehzs73x2p5k7r7pa7na69ej89p40qxnrh60",
     "password": "x",
-    "min_diff": 16,
+    "min_diff": 1,
     "batch_number": 42,
     "poll_sleep": 0.05,
     "reconnect_backoff": 5.0,
@@ -227,15 +227,10 @@ def mine_loop():
 
                
                 # 4. EXECUTE MINER (FULL LOOP)
-                # mining_nonce di sini akan memanggil liblooper.so yg meloop dari 0 - 0xFFFFFFFF
-                # Hasilnya berupa list of tuples [(nonce, hash), ...]
                 found_shares_list = mining_nonce(header_hex, target_miner,config["batch_number"])
 
                 stop_time = time.time()
                 elapse_time = stop_time - start_time
-                
-                # Hitung hashrate berdasarkan scan penuh
-                # 0xFFFFFFFF = 4,294,967,295 hashes
 
                 # 5. Submit SEMUA share yang ditemukan
                 if found_shares_list:
@@ -282,3 +277,4 @@ def mine_loop():
 
 if __name__ == "__main__":
     mine_loop()
+
