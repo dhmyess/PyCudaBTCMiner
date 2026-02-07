@@ -2,10 +2,9 @@
 #include <cuda_runtime.h>
 #include <stdio.h>
 
-// Macro rotasi bit SHA-256
 #define ROTR(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
 
-// Konstanta K SHA-256 (Constant Memory agar akses secepat register)
+
 __constant__ uint32_t K[64] = {
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
@@ -17,8 +16,6 @@ __constant__ uint32_t K[64] = {
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 };
 
-// Fungsi intrinsik CUDA untuk membalik byte (Little Endian <-> Big Endian)
-// Jauh lebih cepat daripada shift (>> 24) manual.
 __device__ __forceinline__ uint32_t cuda_lev(uint32_t x) {
     return __byte_perm(x, 0, 0x0123);
 }
@@ -116,8 +113,6 @@ __global__ void find_nonce_kernel(
         d = c; c = b; b = a; a = temp1 + temp2;
     }
 
-    // 1. Cek H37 (Word terakhir hasil SHA-256 ronde 64)
-    // 0x5be0cd19 adalah konstanta awal 'h' dari SHA-256
     uint32_t res_h37 = h + 0x5be0cd19; 
 
     if (res_h37 == 0) {
