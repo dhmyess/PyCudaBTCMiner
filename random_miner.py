@@ -224,15 +224,13 @@ def mine_loop():
                     client.extranonce1,
                     extranonce2
                 )
-
-               
-                # 4. EXECUTE MINER (FULL LOOP)
+                # 4. Mining
                 found_shares_list = mining_nonce(header_hex, target_miner,config["batch_number"])
 
                 stop_time = time.time()
                 elapse_time = stop_time - start_time
 
-                # 5. Submit SEMUA share yang ditemukan
+                # 5. Submit
                 if found_shares_list:
                     for (nonce, blockhash) in found_shares_list:
                         found_difficulty = 0x00000000ffff0000000000000000000000000000000000000000000000000000 / int(blockhash, 16)
@@ -255,10 +253,9 @@ def mine_loop():
                         ]
                         client.send("mining.submit", params)
                 else:
-                    # Jika list kosong (-1 logic), berarti tidak ada share di range ini
                     pass
 
-                # 6. Ganti Extranonce2 setelah 1 full loop selesai
+                # 6. Ganti Extranonce2
                 en2_counter += 1
                 extranonce2_int = random.randint(0,0xffffffff)
 
@@ -277,4 +274,3 @@ def mine_loop():
 
 if __name__ == "__main__":
     mine_loop()
-
