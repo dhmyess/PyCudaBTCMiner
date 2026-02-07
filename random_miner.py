@@ -12,9 +12,9 @@ from rrnonce import mining_nonce, lev
 # CONFIG
 # -------------------------------
 config = {
-    "pool_address": "127.0.0.1",
+    "pool_address": "public-pool.io",
     "pool_port": 3333,
-    "user_name": "bc1qngzehzs73x2p5k7r7pa7na69ej89p40qxnrh60",
+    "user_name": "bc1qngzehzs73x2p5k7r7pa7na69ej89p40qxnrh60.PyCudaBTCMiner",
     "password": "x",
     "min_diff": 1,
     "batch_number": 42,
