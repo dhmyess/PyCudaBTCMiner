@@ -89,7 +89,6 @@ __global__ void find_nonce_kernel(
     for(int i=9; i<15; i++) w[i] = 0;
     w[15] = 0x100;
 
-    #pragma unroll
     for (int i = 16; i < 64; i++) {
         uint32_t s0 = ROTR(w[i-15], 7) ^ ROTR(w[i-15], 18) ^ (w[i-15] >> 3);
         uint32_t s1 = ROTR(w[i-2], 17) ^ ROTR(w[i-2], 19) ^ (w[i-2] >> 10);
@@ -100,7 +99,6 @@ __global__ void find_nonce_kernel(
     a = 0x6a09e667; b = 0xbb67ae85; c = 0x3c6ef372; d = 0xa54ff53a;
     e = 0x510e527f; f = 0x9b05688c; g = 0x1f83d9ab; h = 0x5be0cd19;
 
-    #pragma unroll
     for (int i = 0; i < 64; i++) {
         uint32_t S1 = ROTR(e, 6) ^ ROTR(e, 11) ^ ROTR(e, 25);
         uint32_t ch = (e & f) ^ ((~e) & g);
@@ -116,17 +114,14 @@ __global__ void find_nonce_kernel(
     uint32_t res_h37 = h + 0x5be0cd19; 
 
     if (res_h37 == 0) {
-        // 2. Cek H36 (Hanya jika h37 lolos)
         uint32_t res_h36 = g + 0x1f83d9ab;
         uint32_t res_h36_le = cuda_lev(res_h36);
 
         if (res_h36_le <= diff1) {
-            // 3. Cek H35 (Hanya jika h36 lolos)
             uint32_t res_h35 = f + 0x9b05688c;
             uint32_t res_h35_le = cuda_lev(res_h35);
 
             if (res_h35_le <= diff2) {
-                // Berhasil! Simpan nonce ke buffer
                 uint32_t old = atomicAdd(found_count, 1);
                 if (old < max_results) {
                     result_buffer[old] = nonce;
